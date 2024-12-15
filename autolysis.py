@@ -21,7 +21,6 @@ import asyncio
 import httpx
 import chardet
 from dotenv import load_dotenv
-
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
