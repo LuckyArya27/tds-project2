@@ -11,6 +11,7 @@
 # ///
 
 
+import glob
 import os
 import sys
 import pandas as pd
@@ -76,13 +77,14 @@ def performAutolysis(data_frame):
     return analysis_results
 
 def createPlots(data_frame, output_dir):
-    """Create and save important plots for numerical columns."""
+    """Create and save important plots for numerical columns and return a list of plot file paths."""
     sns.set(style='whitegrid')
     numerical_columns = data_frame.select_dtypes(include=['number']).columns
+    plot_file_paths = []
 
     if numerical_columns.empty:
         print("No numerical columns found for visualization.")
-        return
+        return plot_file_paths
 
     # Calculate variance for numerical columns
     variance = data_frame[numerical_columns].var()
@@ -92,23 +94,29 @@ def createPlots(data_frame, output_dir):
 
     if significant_columns.empty:
         print("No significant numerical columns found for plotting.")
-        return
+        return plot_file_paths
 
     for column in significant_columns:
         plt.figure()
         sns.histplot(data_frame[column].dropna(), kde=True)
         plt.title(f"Distribution of {column}")
+        plt.xlabel(column)
+        plt.ylabel("Frequency")
+        plt.legend()
         file_name = os.path.join(output_dir, f"{column}_distribution.png")
         try:
             plt.savefig(file_name)
+            plot_file_paths.append(file_name)  # Add the plot path to the list
             print(f"Saved distribution plot: {file_name}")
         except Exception as e:
             print(f"Error saving plot for {column}: {e}")
         finally:
             plt.close()
 
-def generateNarrative(analysis_data):
-    """Generate a narrative using the LLM based on analysis results."""
+    return plot_file_paths
+
+def generateNarrative(analysis_data, plot_file_paths):
+    """Generate a narrative using the LLM based on analysis results and visualizations."""
     if not AIPROXY_TOKEN:
         print("Error: AIPROXY_TOKEN environment variable is not set.")
         sys.exit(1)
@@ -129,7 +137,19 @@ def generateNarrative(analysis_data):
         'Content-Type': 'application/json'
     }
 
-    prompt_message = f"Provide a detailed analysis based on the following significant data insights: {significant_analysis}"
+    # Modify prompt to include plot paths
+    plot_descriptions = "\n".join([f"- {plot_path}" for plot_path in plot_file_paths]) if plot_file_paths else "No visualizations available."
+
+    prompt_message = f"""
+    Provide a detailed analysis based on the following significant data insights:
+    Summary: {significant_analysis['summary']}
+    Missing values: {significant_analysis['missing_values']}
+    Correlations: {significant_analysis['correlation']}
+    
+    Additionally, consider the following visualizations for insights:
+    {plot_descriptions}
+    """
+
     request_data = {
         'model': 'gpt-4o-mini',
         'messages': [{'role': 'user', 'content': prompt_message}]
@@ -138,7 +158,7 @@ def generateNarrative(analysis_data):
     try:
         response = httpx.post(API_URL, headers=headers, json=request_data, timeout=30.0)
         response.raise_for_status()
-        narrative = response.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+        narrative = response.json().get('choices', [{}])[0].get('message', {}).get('content', 'No narrative generated.')
         if narrative:
             print("Narrative generated successfully.")
             return narrative
@@ -155,39 +175,54 @@ def mainProcess(file_path):
     """Main function to run the autolysis process."""
     print("Starting the autolysis process...")
 
-    # Create output directory based on the CSV file name
-    base_name = os.path.splitext(os.path.basename(file_path))[0]
-    output_dir = base_name
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Load the dataset
-    data = loadData(file_path)
-    print("Dataset loaded successfully.")
-
-    # Perform analysis
-    print("Performing data analysis...")
-    analysis_results = performAutolysis(data)
-
-    # Create visualizations
-    print("Generating visualizations...")
-    createPlots(data, output_dir)
-
-    # Generate narrative
-    print("Generating narrative...")
-    narrative = generateNarrative(analysis_results)
-
-    if narrative != "Narrative generation failed due to an error.":
-        readme_path = os.path.join(output_dir, 'README.md')
-        try:
-            with open(readme_path, 'w') as f:
-                f.write(narrative)
-            print(f"Narrative successfully saved to {readme_path}.")
-        except Exception as e:
-            print(f"Error saving narrative: {e}")
+     # If '*' is entered, gather all .csv files in the current directory
+    if file_path == '*':
+        print("Processing all CSV files in the current directory...")
+        # Get a list of all CSV files in the current directory
+        file_paths = glob.glob("*.csv")
+        if not file_paths:
+            print("Error: No CSV files found in the current directory.")
+            sys.exit(1)
     else:
-        print("Failed to generate narrative. Skipping README creation.")
+        # Process the single file specified by the user
+        file_paths = [file_path]
 
-    print("Autolysis process completed.")
+    for file_path in file_paths:
+        print(f"Processing file: {file_path}")
+
+        # Create output directory based on the CSV file name
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        output_dir = base_name
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Load the dataset
+        data = loadData(file_path)
+        print("Dataset loaded successfully.")
+
+        # Perform analysis
+        print("Performing data analysis...")
+        analysis_results = performAutolysis(data)
+
+        # Create visualizations
+        print("Generating visualizations...")
+        plot_file_paths = createPlots(data, output_dir)
+
+        # Generate narrative
+        print("Generating narrative...")
+        narrative = generateNarrative(analysis_results, plot_file_paths)
+
+        if narrative != "Narrative generation failed due to an error.":
+            readme_path = os.path.join(output_dir, 'README.md')
+            try:
+                with open(readme_path, 'w') as f:
+                    f.write(narrative)
+                print(f"Narrative successfully saved to {readme_path}.")
+            except Exception as e:
+                print(f"Error saving narrative: {e}")
+        else:
+            print("Failed to generate narrative. Skipping README creation.")
+
+        print("Autolysis process completed.")
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
